@@ -42,7 +42,7 @@ ok !$response->is_failed;
 $contract->contract_address($response->get->response);
 $contract->gas(undef);
 
-my @account_list = @{ $rpc_client->eth_accounts() };
+my @account_list = @{$rpc_client->eth_accounts()};
 
 $response = $contract->invoke("startTime")->call_transaction();
 ok !$response->is_failed;

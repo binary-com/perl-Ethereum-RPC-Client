@@ -8,7 +8,7 @@ BEGIN {
         unless $ENV{TRAVIS};
 }
 
-my $eth = Ethereum::RPC::Client->new();
+my $eth                = Ethereum::RPC::Client->new();
 my $web3_clientVersion = $eth->web3_clientVersion;
 diag "Got $web3_clientVersion";
 ok($web3_clientVersion);

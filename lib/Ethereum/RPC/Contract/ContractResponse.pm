@@ -11,13 +11,12 @@ our $VERSION = '0.03';
 
 =cut
 
-
 use Moo;
 use Encode;
 use Math::BigInt;
 use Math::BigFloat;
 
-has response => ( is => 'ro' );
+has response => (is => 'ro');
 
 =head2 to_big_int
 
@@ -48,7 +47,6 @@ Return:
     new Math::BigFloat
 
 =cut
-
 
 sub to_big_float {
     my $self = shift;
@@ -90,12 +88,13 @@ Return:
     hexadecimal string
 
 =cut
+
 sub to_hex {
     my $self = shift;
 
     return undef unless $self->response;
 
-    if( $self->response =~ /^0x[0-9A-F]+$/i ) {
+    if ($self->response =~ /^0x[0-9A-F]+$/i) {
         return $self->response;
     }
 

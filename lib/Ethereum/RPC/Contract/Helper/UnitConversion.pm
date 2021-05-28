@@ -57,7 +57,7 @@ sub to_kether {
 }
 
 sub to_mether {
-    return to_hex(shift, 1E24)
+    return to_hex(shift, 1E24);
 }
 
 sub to_gether {

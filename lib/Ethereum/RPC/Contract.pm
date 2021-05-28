@@ -24,7 +24,7 @@ use Ethereum::RPC::Contract::ContractTransaction;
 use Ethereum::RPC::Contract::Helper::UnitConversion;
 
 has contract_address => (is => 'rw');
-has contract_abi => (
+has contract_abi     => (
     is       => 'ro',
     required => 1
 );
@@ -58,7 +58,7 @@ has gas => (is => 'rw');
 
 has contract_decoded => (
     is      => 'rw',
-    default => sub{{}},
+    default => sub { {} },
 );
 
 =head2 BUILD
@@ -86,10 +86,10 @@ it to the contract class.
 
 sub BUILD {
     my ($self) = @_;
-    my @decoded_json = @{decode_json( $self->contract_abi // "[]" )};
+    my @decoded_json = @{decode_json($self->contract_abi // "[]")};
 
     for my $json_input (@decoded_json) {
-        if ( $json_input->{type} =~ /^function|event$/ ) {
+        if ($json_input->{type} =~ /^function|event$/) {
             $self->contract_decoded->{$json_input->{name}} ||= [];
             push(@{$self->contract_decoded->{$json_input->{name}}}, $json_input->{inputs}) if scalar @{$json_input->{inputs}} > 0;
         }
@@ -123,7 +123,7 @@ sub invoke {
 
     my $function_id = substr($self->get_function_id($name, scalar @params), 0, 10);
 
-    my $res = $self->_prepare_transaction($function_id, \@params);
+    my $res = $self->_prepare_transaction($function_id, $name, \@params);
 
     return $res;
 }
@@ -179,11 +179,11 @@ on_fail: error string
 =cut
 
 sub _prepare_transaction {
-    my ($self, $compiled_data, $params) = @_;
+    my ($self, $compiled_data, $function_name, $params) = @_;
 
-    my $hex_params = $self->get_hex_param($params);
+    my $encoded = $self->encode($function_name, $params);
 
-    my $data = $compiled_data . $hex_params;
+    my $data = $compiled_data . $encoded;
 
     return Ethereum::RPC::Contract::ContractTransaction->new(
         contract_address => $self->contract_address,
@@ -196,6 +196,80 @@ sub _prepare_transaction {
 
 }
 
+=head2 encode
+
+Encode function arguments to the ABI format
+
+=over 4
+
+=item C<function_name> ABI function name
+
+=item C<params> all the values for the function in the same order than the ABI
+
+=back
+
+Returns an encoded data string
+
+=cut
+
+sub encode {
+    my ($self, $function_name, @params) = @_;
+
+    my $inputs = $self->contract_decoded->{$function_name}->[0];
+    my $offset = $self->get_function_offset($inputs);
+
+    my (@static, @dynamic);
+    my @inputs = $inputs->@*;
+    for (my $input_index = 0; $input_index < scalar @inputs; $input_index++) {
+        my ($static, $dynamic) = $self->get_hex_param($offset, $inputs[$input_index]->{type}, $params[$input_index]);
+        push(@static,  $static->@*);
+        push(@dynamic, $dynamic->@*);
+        $offset += scalar $dynamic->@*;
+    }
+
+    my @data = (@static, @dynamic);
+    my $data = join("", @data);
+
+    return $data;
+}
+
+=head2 get_function_offset
+
+Get the abi function total offset
+
+For the cases we have arrays as parameters we can have a dynamic size
+for the static values, for sample if the basic type has a fixed value
+and also the array is fixed, we will have all the items on the array
+being added with the static items before the dynamic items in the encoded
+data
+
+=over 4
+
+=item C<input_list> the json input from the abi data
+
+=back
+
+return the integer offset
+
+=cut
+
+sub get_function_offset {
+    my ($self, $input_list) = @_;
+    my $offset = 0;
+    for my $input ($input_list->@*) {
+        $input->{type} =~ /^([a-z]+)([0-9]+)?\[(\d+)?\]/;
+        my $basic_type = $1;
+        my $input_size = $2;
+        my $array_size = $3;
+        if ($input_size && $array_size || ($array_size && $basic_type =~ /^uint|int|fixed/)) {
+            $offset += $array_size;
+            next;
+        }
+        $offset += 1;
+    }
+    return $offset;
+}
+
 =head2 get_hex_param
 
 Convert parameter list to the ABI format:
@@ -203,42 +277,100 @@ https://solidity.readthedocs.io/en/develop/abi-spec.html#function-selector-and-a
 
 =over 4
 
-=item params => array (required)
+=item C<current_offset_count> The offset where we should base the calculation for the next dynamic value
+
+=item C<input_type> The input type specified in the abi sample: string, bytes, uint
+
+=item C<param> The input value
 
 =back
 
-Returns a string containing the ABI format to be send to the contract.
+Returns 2 arrays
+
+Static => contains the static values from the conversion
+Dynamic => contains the dynamic values from the conversion
 
 =cut
 
 sub get_hex_param {
-    my ($self, $params) = @_;
+    my ($self, $current_offset_count, $input_type, $param) = @_;
 
-    my @offset_indices;
     my @static;
     my @dynamic;
 
-    #TODO:
-    # - Arrays
-    # - Bytes
-    for my $param (@$params) {
-        if ($param =~ /^0x[0-9A-F]+$/i) {
-            push(@static, sprintf("%064s", substr($param, 2)));
-        } elsif (looks_like_number($param)) {
-            push(@static, sprintf("%064s", Math::BigInt->new($param)->to_hex));
+    # is an array
+    if ($input_type =~ /(\d+)?\[(\d+)?\]/) {
+        my $size              = $param->@*;
+        my $static_item_size  = $1;
+        my $static_array_size = $2;
+
+        # if it is dynamic array we just write the offset
+        unless ($static_array_size && $static_item_size) {
+            push(@static, sprintf("%064s", Math::BigInt->new($current_offset_count * 32)->to_hex));
+        }
+
+        # if the array is static we add the array size to the dynamic list
+        unless ($static_array_size) {
+            push(@dynamic, sprintf("%064s", Math::BigInt->new($size)->to_hex));
+        }
+
+        my @internal_static;
+        my @internal_dynamic;
+
+        # for each item on the array we call get_hex_param recursively
+        # passing the basic type with the size if it is present
+        $input_type =~ /^([a-z]+([0-9]+)?)\[(?:\d+)?\]/;
+        for my $item ($param->@*) {
+            my ($internal_static, $internal_dynamic) = $self->get_hex_param($size, $1, $item);
+            push(@internal_static,  $internal_static->@*);
+            push(@internal_dynamic, $internal_dynamic->@*);
+            # the size of the array is used to calculate the current offset
+            # the static offset has already been calculated counting the params
+            # size, so we need to add now just the dynamic values
+            $size += $internal_dynamic->@*;
+        }
+
+        # if the byte and the basic type have a fixed size
+        # they are considered static, so we can just add them to
+        # the static list
+        if ($static_item_size && $static_array_size) {
+            push(@static, @internal_static);
         } else {
-            push(@offset_indices, scalar @dynamic);
-            my $hex_value = unpack("H*", $param);
-            push(@dynamic, sprintf("%064s", Math::BigInt->new(length($param))->to_hex));
+            push(@dynamic, @internal_static);
+        }
+        push(@dynamic, @internal_dynamic);
+
+    } elsif ($input_type eq 'address' && $param =~ /^0x[0-9A-F]+$/i) {
+        push(@static, sprintf("%064s", substr($param, 2)));
+    } elsif ($input_type =~ /^(u)?(int|bool)(\d+)?/ && looks_like_number($param)) {
+        push(@static, sprintf("%064s", Math::BigInt->new($param)->to_hex));
+    } elsif ($input_type =~ /^(?:string|bytes)(\d+)?$/) {
+        my $basic_type_size = $1;
+        my $hex_value;
+        my $size;
+        # is already an hexadecimal value
+        if ($param =~ /^(?:0x|0X)([a-fA-F0-9]+)$/) {
+            # hex without 0x
+            $hex_value = $1;
+            # for the byte array each item
+            # has the size of 1
+            $size = 1;
+        } else {
+            $hex_value = unpack("H*", $param);
+            $size      = length($param);
+        }
+        # if it has a fixed size we can add the value directly
+        # this is mostly for the bytes
+        if ($basic_type_size) {
+            push(@static, $hex_value . "0" x (64 - length($hex_value)));
+        } else {
+            push(@static,  sprintf("%064s", Math::BigInt->new($current_offset_count * 32)->to_hex));
+            push(@dynamic, sprintf("%064s", sprintf("%x", $size)));
             push(@dynamic, $hex_value . "0" x (64 - length($hex_value)));
         }
     }
 
-    my $offset_count = scalar @offset_indices + scalar @static;
-    my @offset = map { sprintf("%064s", Math::BigInt->new(($offset_count + $_) * 32)->to_hex) } @offset_indices;
-
-    my $hex_response = join("", @offset, @static, @dynamic);
-    return $hex_response;
+    return \@static, \@dynamic;
 
 }
 
@@ -270,7 +402,7 @@ sub read_event {
     my $res = $self->rpc_client->eth_getLogs([{
                 address   => $self->contract_address,
                 fromBlock => $from_block,
-                topics    => [$function_id] }]);
+                topics    => [$function_id]}]);
 
     return $res;
 }
@@ -293,7 +425,7 @@ Returns a L<Ethereum::Contract::ContractTransaction> object.
 
 sub invoke_deploy {
     my ($self, $compiled_data, @params) = @_;
-    return $self->_prepare_transaction($compiled_data, \@params);
+    return $self->_prepare_transaction($compiled_data, undef, \@params);
 }
 
 =head2 append_prefix

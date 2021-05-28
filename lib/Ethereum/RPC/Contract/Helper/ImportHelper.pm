@@ -13,7 +13,6 @@ our $VERSION = '0.03';
 
 =cut
 
-
 use JSON::MaybeXS;
 
 =head2 to_hex
@@ -35,7 +34,9 @@ sub from_truffle_build {
 
     my $decoded_json = decode_json($document);
 
-    return { abi => encode_json($decoded_json->{abi}), bytecode => $decoded_json->{bytecode} };
+    return {
+        abi      => encode_json($decoded_json->{abi}),
+        bytecode => $decoded_json->{bytecode}};
 }
 
 1;

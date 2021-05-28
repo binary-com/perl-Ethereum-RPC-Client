@@ -11,24 +11,29 @@ our $VERSION = '0.03';
 
 =cut
 
-
 use Moo;
 use Future;
 
 use Ethereum::RPC::Contract::ContractResponse;
 use Ethereum::RPC::Contract::Helper::UnitConversion;
 
-has contract_address => ( is => 'ro' );
-has rpc_client       => ( is => 'ro', lazy => 1 );
+has contract_address => (is => 'ro');
+has rpc_client       => (
+    is   => 'ro',
+    lazy => 1
+);
 
 sub _build_rpc_client {
     return Ethereum::RPC::Client->new;
 }
 
-has data             => ( is => 'ro', required => 1 );
-has from             => ( is => 'ro');
-has gas              => ( is => 'ro');
-has gas_price        => ( is => 'ro');
+has data => (
+    is       => 'ro',
+    required => 1
+);
+has from      => (is => 'ro');
+has gas       => (is => 'ro');
+has gas_price => (is => 'ro');
 
 =head2 call_transaction
 
@@ -43,12 +48,14 @@ sub call_transaction {
     my ($self, $block) = @_;
 
     my $res = $self->rpc_client->eth_call([{
-        to    => $self->contract_address,
-        data  => $self->data,
-    }, $block // "latest"]);
+                to   => $self->contract_address,
+                data => $self->data,
+            },
+            $block // "latest"
+        ]);
 
     my $future = Future->new;
-    return $future->done(Ethereum::RPC::Contract::ContractResponse->new({ response => $res })) if $res and $res =~ /^0x/;
+    return $future->done(Ethereum::RPC::Contract::ContractResponse->new({response => $res})) if $res and $res =~ /^0x/;
     return $future->fail($res || "Can't call transaction");
 
 }
@@ -70,16 +77,16 @@ sub send_transaction {
     my $future = Future->new;
 
     my $params = {
-        to          => $self->contract_address,
-        from        => $self->from,
-        gasPrice    => $self->gas_price,
-        data        => $self->data,
+        to       => $self->contract_address,
+        from     => $self->from,
+        gasPrice => $self->gas_price,
+        data     => $self->data,
     };
 
     $params->{gas} = Ethereum::RPC::Contract::Helper::UnitConversion::to_wei($self->gas) if $self->gas;
     my $res = $self->rpc_client->eth_sendTransaction([$params]);
 
-    return $future->done(Ethereum::RPC::Contract::ContractResponse->new({ response => $res })) if $res and $res =~ /^0x/;
+    return $future->done(Ethereum::RPC::Contract::ContractResponse->new({response => $res})) if $res and $res =~ /^0x/;
     return $future->fail($res || "Can't send transaction");
 
 }
@@ -113,7 +120,7 @@ sub get_contract_address {
     }
 
     my $future = Future->new;
-    return $future->done(Ethereum::RPC::Contract::ContractResponse->new({ response => $deployed->{contractAddress} }))
+    return $future->done(Ethereum::RPC::Contract::ContractResponse->new({response => $deployed->{contractAddress}}))
         if $deployed and ref($deployed) eq 'HASH';
 
     return $future->fail("Can't get the contract address for transaction: " . $transaction->get->response);
